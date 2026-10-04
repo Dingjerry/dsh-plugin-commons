@@ -1,0 +1,5 @@
+# Patch our own plugin row so Cordis hot-reloads the row together with the code.
+# Using `patch` instead of `insert` ensures the sidebar entry appears on every
+# hot-reload cycle without requiring a full DSH restart.
+- patch:
+    id: plugin-commons

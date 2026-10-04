@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "pluginVersion": "0.2.0",
+  "recommendedHost": "0.2.0-rc.2",
+  "supportedHosts": ["0.2.0-rc.2"]
+}
