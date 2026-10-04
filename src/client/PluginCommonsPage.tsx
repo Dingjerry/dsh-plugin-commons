@@ -315,8 +315,9 @@ export function PluginCommonsPage(): JSX.Element {
 
   useEffect(() => {
     if (tab !== 'market') return
+    // Initial load / reload on category, sort, or tab changes (not query)
     void load(query, category, sort, page)
-  }, [load, query, category, sort, tab, page])
+  }, [load, category, sort, tab])
 
   useEffect(() => {
     if (tab !== 'market' && tab !== 'installed') return
@@ -353,7 +354,25 @@ export function PluginCommonsPage(): JSX.Element {
     return () => { cancelled = true }
   }, [busy, plugins, loadInstalled])
 
-  const search = useCallback((value: string) => { setQuery(value); setPage(1) }, [])
+  const search = useCallback((value: string) => {
+    setQuery(value)
+    setPage(1)
+  }, [])
+
+  // Debounced search: only trigger load 300ms after user stops typing
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchQueryRef = useRef('')
+  searchQueryRef.current = query
+
+  useEffect(() => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    searchTimerRef.current = setTimeout(() => {
+      void load(searchQueryRef.current, category, sort, 1)
+    }, 300)
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    }
+  }, [query, tab]) // only react to query changes
 
   const filterByCategory = useCallback((cat: string) => { setCategory(cat); setPage(1) }, [])
   const sortBy = useCallback((s: string) => { setSort(s); setPage(1) }, [])
