@@ -479,6 +479,16 @@ export function PluginCommonsPage(): JSX.Element {
             {!managementAvailable && <><br />当前 profile 未挂载插件管理器，仅可浏览</>}
           </div>
 
+          {total < 10000 && (
+            <div style={styles.infoBox}>
+              <span style={{ marginRight: 8 }}>ℹ️</span>
+              <span>默认首屏加载 2000 个高星插件（20 次 API 请求，不会触发限速）。</span>
+              <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer noopener" style={{ marginLeft: 4, color: 'var(--dsw-alias-state-business-primary, #7da2ff)' }}>
+                配置 GitHub Token 可拉取全部 17,000+ 插件 →
+              </a>
+            </div>
+          )}
+
           {notice !== null && <div style={styles.notice}>{notice}</div>}
           {failure !== null && <div style={styles.failure}>{failure}</div>}
 
@@ -933,6 +943,15 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
     whiteSpace: 'nowrap',
+  },
+  infoBox: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: '10px 28px',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.55)',
+    lineHeight: 1.5,
   },
   checkUpdateButton: {
     margin: '8px 28px 0',
