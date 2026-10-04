@@ -464,7 +464,10 @@ export function PluginCommonsPage(): JSX.Element {
       {tab === 'market' && (
         <>
           <header style={styles.header}>
-            <h1 style={styles.title}>插件公社</h1>
+            <h1 style={styles.title}>
+              插件公社
+              <span style={styles.versionLabel}>v0.2.0</span>
+            </h1>
             <p style={styles.subtitle}>
               社区共建，插件共享 · 浏览、搜索 GitHub 上的 {loading || !total ? 'dsh-plugin' : `${total.toLocaleString()}+ dsh-plugin`} 插件，中文界面 · 动态更新 · 本地缓存
             </p>
@@ -792,7 +795,13 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     padding: '24px 28px 0',
   },
-  title: { margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em', color: '#fff' },
+  title: { margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em', color: '#fff', display: 'inline', alignItems: 'baseline', gap: 8 },
+  versionLabel: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    fontWeight: 400,
+    marginLeft: 6,
+  },
   subtitle: { margin: '4px 0 0', fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.5 },
   searchRow: { padding: '16px 28px 0' },
   searchWrap: {
