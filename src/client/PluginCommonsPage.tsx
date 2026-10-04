@@ -5,10 +5,6 @@
  * plugin catalogue, and installs or removes a plugin through the host's
  * management endpoints. It deliberately avoids the UI-primitives component
  * library so the browser half stays small and dependency-light.
- *
- * Installing a plugin changes the application's plugin tree, including this
- * panel's own client bundle, so a successful operation ends in one page reload
- * rather than pretending the running page is still current.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -102,6 +98,7 @@ const POLL_MS = 2000
 const OPERATION_TIMEOUT_MS = 5 * 60 * 1000
 
 function formatNumber(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
@@ -130,12 +127,25 @@ function canonicalRepo(url: string): string {
   return url.trim().replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase()
 }
 
+function getInitial(name: string): string {
+  return name.charAt(0).toUpperCase()
+}
+
+function getRandomColor(name: string): string {
+  const colors = [
+    '#5B90FF', '#7ED321', '#F5A623', '#D0D0D0', '#BA508F',
+    '#5B90FF', '#FF6B6B', '#9B59B6', '#00B894', '#FDCB6E',
+  ]
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  const idx = Math.abs(hash) % colors.length
+  return colors[idx]!
+}
+
 /**
  * Match a catalogue entry to an installed bundle.
- *
- * The repository URL the package manifest declares is authoritative; the
- * `owner/repo` → `@owner/repo` name identity is the fallback for packages that
- * publish no `repository` field.
  */
 function matchInstalled(plugin: Plugin, installed: InstalledPlugin[]): InstalledPlugin | undefined {
   const repo = canonicalRepo(plugin.html_url)
@@ -221,17 +231,12 @@ export function PluginCommonsPage(): JSX.Element {
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      
       if (data.failed > 0) {
         setFailure(`批量更新完成：${data.success} 成功，${data.failed} 失败。${data.errors?.join('; ')}`)
       } else {
         setNotice(`所有 ${data.success} 个插件已更新成功！页面将自动刷新…`)
       }
-      
-      // 等待一段时间后刷新页面，让新安装的插件生效
-      setTimeout(() => {
-        window.location.reload()
-      }, data.failed > 0 ? 5000 : 2000)
+      setTimeout(() => { window.location.reload() }, data.failed > 0 ? 5000 : 2000)
     } catch (err) {
       setFailure(`批量更新失败：${err instanceof Error ? err.message : String(err)}`)
     }
@@ -273,9 +278,7 @@ export function PluginCommonsPage(): JSX.Element {
     }
   }, [])
 
-  useEffect(() => {
-    void loadMeta()
-  }, [loadMeta])
+  useEffect(() => { void loadMeta() }, [loadMeta])
 
   useEffect(() => {
     if (tab !== 'market') return
@@ -284,75 +287,51 @@ export function PluginCommonsPage(): JSX.Element {
 
   useEffect(() => {
     if (tab !== 'market' && tab !== 'installed') return
-    void loadInstalled().catch(() => {
-      setManagementAvailable(false)
-    })
+    void loadInstalled().catch(() => { setManagementAvailable(false) })
   }, [loadInstalled, tab])
 
-  // One watcher for an accepted install/removal: poll until the profile
-  // reflects it, then reload so the new plugin's client bundle is picked up.
+  // Poll for install/uninstall completion
   useEffect(() => {
     if (busy === null) return
     let cancelled = false
     const tick = async (): Promise<void> => {
       if (cancelled) return
       try {
-        const data = (await loadInstalled())
+        const data = await loadInstalled()
         const current = busyRef.current
         if (current === null || cancelled) return
-        const plugin = plugins.find(
-          (plugin) =>
-            plugin !== undefined && matchInstalled(plugin, data) !== undefined
-        )
-        const rows = data
-        const present = rows.some((row) => {
+        const plugin = plugins.find((p) => p !== undefined && matchInstalled(p, data) !== undefined)
+        const present = data.some((row) => {
           if (current.kind === 'install') {
             return row.name === plugin?.name || row.name === plugin?.full_name.split('/').pop()
           } else {
             return row.name !== plugin?.name && row.name !== plugin?.full_name.split('/').pop()
           }
         })
-        const done = current.kind === 'install' ? present : !present
-        if (done) {
+        if (current.kind === 'install' ? present : !present) {
           setBusy(null)
           window.location.reload()
           return
         }
-      } catch {
-        /* a reload mid-poll is expected; keep waiting */
-      }
+      } catch { /* a reload mid-poll is expected */ }
       if (!cancelled) setTimeout(() => void tick(), POLL_MS)
     }
     void tick()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [busy, plugins, loadInstalled])
 
-  const search = useCallback((value: string) => {
-    setQuery(value)
-    setPage(1)
-  }, [])
+  const search = useCallback((value: string) => { setQuery(value); setPage(1) }, [])
 
-  const filterByCategory = useCallback((cat: string) => {
-    setCategory(cat)
-    setPage(1)
-  }, [])
-
-  const sortBy = useCallback((s: string) => {
-    setSort(s)
-    setPage(1)
-  }, [])
+  const filterByCategory = useCallback((cat: string) => { setCategory(cat); setPage(1) }, [])
+  const sortBy = useCallback((s: string) => { setSort(s); setPage(1) }, [])
 
   const startOperation = useCallback(
     async (plugin: Plugin, kind: 'install' | 'uninstall', installedRow?: InstalledPlugin) => {
-      setFailure(null)
-      setNotice(null)
+      setFailure(null); setNotice(null)
       const endpoint = kind === 'install' ? 'install' : 'uninstall'
-      const body =
-        kind === 'install'
-          ? { spec: plugin.html_url, enabled: true }
-          : { name: installedRow?.name ?? plugin.name }
+      const body = kind === 'install'
+        ? { spec: plugin.html_url, enabled: true }
+        : { name: installedRow?.name ?? plugin.name }
       try {
         const res = await fetch(`/api/plugin-commons/${endpoint}`, {
           method: 'POST',
@@ -360,16 +339,12 @@ export function PluginCommonsPage(): JSX.Element {
           body: JSON.stringify(body),
         })
         if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as
-            | { error?: { message?: string } }
-            | null
+          const payload = await res.json().catch(() => null)
           throw new Error(payload?.error?.message ?? `HTTP ${res.status}`)
         }
-        setNotice(
-          kind === 'install'
-            ? `正在安装 ${plugin.full_name}…完成后页面会自动刷新。`
-            : `正在卸载 ${plugin.full_name}…完成后页面会自动刷新。`,
-        )
+        setNotice(kind === 'install'
+          ? `正在安装 ${plugin.full_name}…完成后页面会自动刷新。`
+          : `正在卸载 ${plugin.full_name}…完成后页面会自动刷新。`)
         setBusy({ name: plugin.full_name, kind, startedAt: Date.now() })
       } catch (err) {
         setFailure(`${kind === 'install' ? '安装' : '卸载'}失败：${err instanceof Error ? err.message : String(err)}`)
@@ -382,225 +357,110 @@ export function PluginCommonsPage(): JSX.Element {
   // Render helpers
   // -----------------------------------------------------------------------
 
-  const marketCardList = useMemo(
-    () =>
-      plugins.map((p) => {
-        const row = matchInstalled(p, installed)
-        const isBusy = busy?.name === p.full_name
-        return (
-          <div key={p.id} style={styles.card}>
-            <div style={styles.cardHeader}>
-              <a
-                href={p.html_url}
-                target="_blank"
-                rel="noreferrer noopener"
-                style={styles.pluginName}
-              >
-                {p.full_name}
-              </a>
-              <span style={styles.stars}>★ {formatNumber(p.stars)}</span>
+  const marketGrid = useMemo(
+    () => plugins.map((p) => {
+      const row = matchInstalled(p, installed)
+      const isBusy = busy?.name === p.full_name
+      const color = getRandomColor(p.full_name)
+      return (
+        <div key={p.id} style={styles.card}>
+          <div style={styles.cardTop}>
+            <div style={{ width: 44, height: 44, borderRadius: 10, background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, fontWeight: 700, color }}>
+              {getInitial(p.name)}
             </div>
-            {p.description !== null && <div style={styles.description}>{p.description}</div>}
-            <div style={styles.metaRow}>
-              {p.language !== null && <span style={styles.tag}>{p.language}</span>}
-              {p.topics.slice(0, 3).map((t) => (
-                <span key={t} style={styles.tag}>
-                  {t}
-                </span>
-              ))}
-              <span style={styles.metaRight}>{relativeTime(p.updated_at)}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={styles.cardTitle}>
+                <a href={p.html_url} target="_blank" rel="noreferrer noopener" style={{ color: 'inherit', textDecoration: 'none' }}>
+                  {p.full_name}
+                </a>
+                {row && row.version && <span style={styles.versionBadge}>v{row.version}</span>}
+              </div>
+              <div style={styles.cardAuthor}>{p.owner.login}</div>
             </div>
-            <div style={styles.actionRow}>
-              {row !== undefined ? (
-                <>
-                  <span style={row.enabled ? styles.badgeOn : styles.badgeOff}>
-                    {row.enabled ? '已启用' : '已安装 · 未启用'}
-                  </span>
-                  {row.version !== null && <span style={styles.badgeMuted}>v{row.version}</span>}
-                  {row.removable && row.blockedBy === null ? (
-                    <button
-                      type="button"
-                      style={styles.buttonDanger}
-                      disabled={isBusy || !managementAvailable}
-                      onClick={() => void startOperation(p, 'uninstall', row)}
-                    >
-                      {isBusy ? '处理中…' : '卸载'}
-                    </button>
-                  ) : (
-                    <span style={styles.badgeMuted}>不可卸载</span>
-                  )}
-                </>
-              ) : (
-                <button
-                  type="button"
-                  style={styles.buttonPrimary}
-                  disabled={isBusy || !managementAvailable}
-                  onClick={() => void startOperation(p, 'install')}
-                >
-                  {isBusy ? '安装中…' : '安装'}
-                </button>
-              )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, opacity: 0.7, flexShrink: 0 }}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 .2a7 7 0 1 1 0 14A7 7 0 0 1 8 .2Zm3.354 4.854-2.172 2.172 2.172 2.172a.75.75 0 1 1-1.06 1.06L7.25 8.31l-2.822 2.822a.75.75 0 0 1-1.06-1.06l2.822-2.822L5.368 5.368a.75.75 0 0 1 1.06-1.06L8.25 7.14l2.172-2.172a.75.75 0 1 1 1.06 1.06Z" /></svg>
+              {formatNumber(p.stars)}
             </div>
           </div>
-        )
-      }),
+          {p.description && <div style={styles.cardDesc}>{p.description}</div>}
+          <div style={styles.cardTags}>
+            {p.language && <span style={styles.tag}>{p.language}</span>}
+            {p.topics.slice(0, 3).map((t) => <span key={t} style={styles.tag}>{t}</span>)}
+          </div>
+          <div style={styles.cardBottom}>
+            <span style={styles.cardTime}>{relativeTime(p.updated_at)}</span>
+            {row !== undefined ? (
+              row.removable && row.blockedBy === null ? (
+                <button type="button" style={styles.btnSecondary} disabled={isBusy} onClick={() => void startOperation(p, 'uninstall', row)}>
+                  {isBusy ? '处理中…' : '卸载'}
+                </button>
+              ) : (
+                <span style={{ fontSize: 12, opacity: 0.5 }}>
+                  {row.enabled ? '已启用' : '已安装'}
+                </span>
+              )
+            ) : (
+              <button type="button" style={styles.btnPrimary} disabled={isBusy || !managementAvailable} onClick={() => void startOperation(p, 'install')}>
+                {isBusy ? '安装中…' : '安装'}
+              </button>
+            )}
+          </div>
+        </div>
+      )
+    }),
     [plugins, installed, busy, managementAvailable, startOperation],
   )
 
-  const installedCardList = useMemo(
-    () =>
-      installed.length === 0
-        ? null
-        : installed.map((row) => {
-            const isBusy = busy && busy.name === row.name
-            return (
-              <div key={row.name} style={styles.card}>
-                <div style={styles.cardHeader}>
-                  <span style={styles.pluginName}>{row.name}</span>
-                  <span style={styles.stars}>
-                    v{row.version ?? '?'}
-                    {row.needsUpdate && row.latestVersion && (
-                      <span style={{ color: 'var(--dsw-alias-state-business-primary, #2f49d1)', marginLeft: '8px' }}>
-                        ↗ v{row.latestVersion}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <div style={styles.metaRow}>
-                  {row.enabled ? (
-                    <span style={styles.badgeOn}>已启用</span>
-                  ) : (
-                    <span style={styles.badgeOff}>已安装 · 未启用</span>
-                  )}
-                  {row.needsUpdate && (
-                    <span style={{ ...styles.badgeOn, background: 'rgba(47,73,209,0.12)', color: 'var(--dsw-alias-state-business-primary, #2f49d1)' }}>
-                      新版本可用
-                    </span>
-                  )}
-                  {row.repository !== null && (
-                    <a
-                      href={row.repository}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      style={{ fontSize: '12px', opacity: 0.6 }}
-                    >
-                      {row.repository}
-                    </a>
-                  )}
-                </div>
-                <div style={styles.actionRow}>
-                  {row.removable && row.blockedBy === null ? (
-                    <button
-                      type="button"
-                      style={styles.buttonDanger}
-                      disabled={isBusy || !managementAvailable}
-                      onClick={() => {
-                        // Find matching plugin to get full_name
-                        const p = plugins.find((p) => matchInstalled(p, [row]) === row)
-                        startOperation(
-                          p ?? {
-                            id: 0,
-                            name: row.name,
-                            full_name: row.name,
-                            description: null,
-                            html_url: row.repository ?? '',
-                            stars: 0,
-                            forks: 0,
-                            language: null,
-                            topics: [],
-                            owner: { login: '', avatar_url: '' },
-                            updated_at: new Date().toISOString(),
-                          } as Plugin,
-                          'uninstall',
-                          row,
-                        )
-                      }}
-                    >
-                      {isBusy ? '处理中…' : '卸载'}
-                    </button>
-                  ) : (
-                    <span style={styles.badgeMuted}>不可卸载</span>
-                  )}
-                </div>
-              </div>
-            )
-          }),
-    [installed, busy, managementAvailable, startOperation, plugins],
-  )
+  // -----------------------------------------------------------------------
+  // Main render
+  // -----------------------------------------------------------------------
 
   return (
     <div style={styles.root}>
       {/* Tabs */}
       <div style={styles.tabBar}>
-        <button
-          type="button"
-          style={tab === 'market' ? styles.tabActive : styles.tab}
-          onClick={() => setTab('market')}
-        >
-          插件市场
-          <span style={styles.tabCount}>{total}</span>
+        <button type="button" style={tab === 'market' ? styles.tabActive : styles.tab} onClick={() => setTab('market')}>
+          插件市场 <span style={styles.tabCount}>{total}</span>
         </button>
-        <button
-          type="button"
-          style={tab === 'installed' ? styles.tabActive : styles.tab}
-          onClick={() => setTab('installed')}
-        >
-          已安装插件
-          <span style={styles.tabCount}>{installed.length}</span>
+        <button type="button" style={tab === 'installed' ? styles.tabActive : styles.tab} onClick={() => setTab('installed')}>
+          已安装插件 <span style={styles.tabCount}>{installed.length}</span>
         </button>
       </div>
 
-      {/* Market tab */}
+      {/* ====== Market Tab ====== */}
       {tab === 'market' && (
         <>
           <header style={styles.header}>
-            <div style={styles.heroIcon}>
-              <svg width="36" height="36" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2.5" y="2.5" width="15" height="15" rx="3" />
-                <path d="M8 2.5V5a1.6 1.6 0 0 0 3.2 0V2.5" fill="currentColor" fillOpacity={0.1} />
-                <path d="M8 17.5V15a1.6 1.6 0 0 1 3.2 0v2.5" />
-                <circle cx="10" cy="10" r="2.2" />
-                <path d="M10 7.8V4.6M10 12.2v3.2M7.8 10H4.6M12.2 10h3.2" />
-              </svg>
-            </div>
-            <div>
-              <h1 style={styles.title}>插件公社</h1>
-              <p style={styles.subtitle}>
-                社区共建，插件共享 · 浏览、搜索 GitHub 上的 {loading || !total ? 'dsh-plugin' : `${total.toLocaleString()}+ dsh-plugin`} 插件，中文界面 · 动态更新 · 本地缓存
-              </p>
-            </div>
+            <h1 style={styles.title}>插件公社</h1>
+            <p style={styles.subtitle}>
+              社区共建，插件共享 · 浏览、搜索 GitHub 上的 {loading || !total ? 'dsh-plugin' : `${total.toLocaleString()}+ dsh-plugin`} 插件，中文界面 · 动态更新 · 本地缓存
+            </p>
           </header>
 
-          <div style={styles.toolbar}>
-            <input
-              style={styles.search}
-              placeholder="搜索插件名称、描述或关键词"
-              value={query}
-              onChange={(e) => search(e.target.value)}
-            />
+          <div style={styles.searchRow}>
+            <div style={styles.searchWrap}>
+              <svg style={styles.searchIcon} width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg>
+              <input
+                style={styles.search}
+                placeholder="搜索插件名称、描述或关键词，按 Enter 搜索"
+                value={query}
+                onChange={(e) => search(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') search(e.currentTarget.value) }}
+              />
+            </div>
           </div>
 
-          <div style={styles.filters}>
-            <div style={styles.filterGroup}>
+          <div style={styles.filterRow}>
+            <div style={styles.filterScroll}>
               {CATEGORIES.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  style={category === c.id ? styles.chipActive : styles.chip}
-                  onClick={() => filterByCategory(c.id)}
-                >
+                <button key={c.id} type="button" style={category === c.id ? styles.chipActive : styles.chip} onClick={() => filterByCategory(c.id)}>
                   {c.name}
                 </button>
               ))}
             </div>
-            <div style={styles.filterGroup}>
+            <div style={{ display: 'flex', gap: 6 }}>
               {SORTS.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  style={sort === s.id ? styles.chipActive : styles.chip}
-                  onClick={() => sortBy(s.id)}
-                >
+                <button key={s.id} type="button" style={sort === s.id ? styles.chipActive : styles.chip} onClick={() => sortBy(s.id)}>
                   {s.name}
                 </button>
               ))}
@@ -621,30 +481,17 @@ export function PluginCommonsPage(): JSX.Element {
           ) : error ? (
             <div style={styles.state}>加载失败，请刷新重试</div>
           ) : plugins.length === 0 ? (
-            <div style={styles.state}>
-              {query || category !== 'all' ? '没有匹配的插件' : '目录尚未加载完成，稍后再试。'}
-            </div>
+            <div style={styles.state}>{query || category !== 'all' ? '没有匹配的插件' : '目录尚未加载完成，稍后再试。'}</div>
           ) : (
             <>
-              <div style={styles.list}>{marketCardList}</div>
+              <div style={styles.grid}>{marketGrid}</div>
               {hasMore && (
                 <div style={styles.pagination}>
-                  <button
-                    type="button"
-                    style={page === 1 ? styles.pageButtonDisabled : styles.pageButton}
-                    disabled={page === 1}
-                    onClick={() => { setPage(page - 1); void load(query, category, sort, page - 1) }}
-                  >
-                    ← 上一页
-                  </button>
+                  <button type="button" style={page === 1 ? styles.pageBtnDisabled : styles.pageBtn} disabled={page === 1}
+                    onClick={() => { setPage(page - 1); void load(query, category, sort, page - 1) }}>← 上一页</button>
                   <span style={styles.pageInfo}>第 {page} 页 · 共 {Math.ceil(total / 30)} 页</span>
-                  <button
-                    type="button"
-                    style={styles.pageButton}
-                    onClick={() => { setPage(page + 1); void load(query, category, sort, page + 1) }}
-                  >
-                    下一页 →
-                  </button>
+                  <button type="button" style={styles.pageBtn}
+                    onClick={() => { setPage(page + 1); void load(query, category, sort, page + 1) }}>下一页 →</button>
                 </div>
               )}
             </>
@@ -652,22 +499,28 @@ export function PluginCommonsPage(): JSX.Element {
         </>
       )}
 
-      {/* Installed tab */}
+      {/* ====== Installed Tab ====== */}
       {tab === 'installed' && (
         <>
-          <header style={styles.header}>
-            <div style={styles.heroIcon}>
-              <svg width="36" height="36" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 10l4 4 8-8" />
-              </svg>
-            </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '24px 28px 0' }}>
             <div>
               <h1 style={styles.title}>已安装插件</h1>
               <p style={styles.subtitle}>
-                管理已安装的插件
+                查看与管理当前主机的 DSH 插件。项目级与内置插件不在此列表中。
               </p>
             </div>
-          </header>
+            <button type="button" style={styles.btnRefresh} onClick={() => { void loadInstalled(); void load(query, category, sort, page) }}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1.5 8a6.5 6.5 0 1 1 1.9 4.7M14.5 8a6.5 6.5 0 1 0-1.9-4.7"/><path d="M1.5 2.5v5h5" fill="none"/><path d="M14.5 13.5v-5h-5" fill="none"/></svg>
+              刷新列表
+            </button>
+          </div>
+
+          <div style={{ padding: '12px 28px 0' }}>
+            <div style={styles.searchWrap}>
+              <svg style={styles.searchIcon} width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg>
+              <input style={styles.search} placeholder="搜索已安装插件或路径" />
+            </div>
+          </div>
 
           <div style={styles.summary}>
             共 <strong>{installed.length}</strong> 个已安装插件
@@ -679,19 +532,65 @@ export function PluginCommonsPage(): JSX.Element {
             {!managementAvailable && <><br />当前 profile 未挂载插件管理器</>}
           </div>
 
-          <div style={{ padding: '0 28px', marginBottom: '8px' }}>
-            <button
-              type="button"
-              style={styles.checkUpdateButton}
-              disabled={updating || !managementAvailable}
-              onClick={() => void checkUpdates()}
-            >
-              {updating ? '正在检查…' : '🔄 检查更新'}
-            </button>
-          </div>
+          <button type="button" style={styles.checkUpdateButton} disabled={updating || !managementAvailable}
+            onClick={() => void checkUpdates()}>
+            {updating ? '正在检查…' : '🔄 检查更新'}
+          </button>
 
-          {installedCardList ?? (
+          {installed.length === 0 ? (
             <div style={styles.state}>暂无已安装插件</div>
+          ) : (
+            <div style={styles.installedList}>
+              {installed.map((row) => {
+                const isBusy = busy && busy.name === row.name
+                const color = getRandomColor(row.name)
+                return (
+                  <div key={row.name} style={styles.installedCard}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 8, background: `${color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, fontWeight: 700, color }}>
+                        {getInitial(row.name)}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontWeight: 600, fontSize: 14 }}>{row.name}</span>
+                          {row.version && <span style={styles.versionBadge}>v{row.version}</span>}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                          {row.enabled ? (
+                            <span style={styles.badgeOn}>已启用</span>
+                          ) : (
+                            <span style={styles.badgeOff}>已安装 · 未启用</span>
+                          )}
+                          {row.needsUpdate && (
+                            <span style={{ ...styles.badgeOn, background: 'rgba(47,73,209,0.12)', color: 'var(--dsw-alias-state-business-primary, #2f49d1)' }}>
+                              新版本可用
+                            </span>
+                          )}
+                          {row.repository && (
+                            <a href={row.repository} target="_blank" rel="noreferrer noopener" style={{ fontSize: 12, opacity: 0.5, textDecoration: 'none' }}>
+                              {row.repository}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {row.removable && row.blockedBy === null ? (
+                        <button type="button" style={styles.btnDanger} disabled={!!isBusy}
+                          onClick={() => {
+                            const p = plugins.find((p) => matchInstalled(p, [row]) === row)
+                            startOperation(p ?? { id: 0, name: row.name, full_name: row.name, description: null, html_url: row.repository ?? '', stars: 0, forks: 0, language: null, topics: [], owner: { login: '', avatar_url: '' }, updated_at: new Date().toISOString() } as Plugin, 'uninstall', row)
+                          }}>
+                          {isBusy ? '处理中…' : '卸载'}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 12, opacity: 0.4 }}>不可卸载</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </>
       )}
@@ -700,60 +599,36 @@ export function PluginCommonsPage(): JSX.Element {
         插件由第三方社区作者发布；插件公社是社区项目，并非 DeepSeek 官方出品。
       </footer>
 
-      {/* Update check dialog */}
+      {/* Update dialog */}
       {showUpdateDialog && createPortal(
-        <div style={styles.overlay}>
-          <div style={styles.dialog}>
+        <div style={styles.overlay} onClick={() => setShowUpdateDialog(false)}>
+          <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
             <div style={styles.dialogHeader}>
-              <h3 style={styles.dialogTitle}>
-                {hasUpdates ? '🎉 发现更新' : '✅ 已安装插件均为最新版本'}
-              </h3>
-              <button
-                type="button"
-                style={styles.dialogClose}
-                onClick={() => setShowUpdateDialog(false)}
-              >
-                ✕
-              </button>
+              <h3 style={styles.dialogTitle}>{hasUpdates ? '🎉 发现更新' : '✅ 已安装插件均为最新版本'}</h3>
+              <button type="button" style={styles.dialogClose} onClick={() => setShowUpdateDialog(false)}>✕</button>
             </div>
             <div style={styles.dialogBody}>
               {hasUpdates && updateList.length > 0 ? (
                 <>
-                  <p style={{ marginBottom: '12px', fontSize: '14px' }}>以下插件有新版本可用，是否立即更新？</p>
-                  <div style={{ maxHeight: '200px', overflowY: 'auto', marginBottom: '16px' }}>
+                  <p style={{ marginBottom: 12, fontSize: 14 }}>以下插件有新版本可用，是否立即更新？</p>
+                  <div style={{ maxHeight: 200, overflowY: 'auto', marginBottom: 16 }}>
                     {updateList.map((item, idx) => (
                       <div key={idx} style={styles.updateItem}>
                         <span style={{ fontWeight: 500 }}>{item.name}</span>
-                        <span style={{ color: 'var(--dsw-alias-label-tertiary, #6b7080)', marginLeft: '8px' }}>
+                        <span style={{ color: 'var(--dsw-alias-label-tertiary, #6b7080)', marginLeft: 8 }}>
                           {item.local} → {item.latest}
                         </span>
                       </div>
                     ))}
                   </div>
-                  <p style={{ fontSize: '12px', opacity: 0.7, marginBottom: '16px' }}>
-                    更新完成后将自动刷新页面
-                  </p>
+                  <p style={{ fontSize: 12, opacity: 0.7, marginBottom: 16 }}>更新完成后将自动刷新页面</p>
                   <div style={styles.dialogActions}>
-                    <button
-                      type="button"
-                      style={styles.buttonCancel}
-                      onClick={() => setShowUpdateDialog(false)}
-                    >
-                      稍后更新
-                    </button>
-                    <button
-                      type="button"
-                      style={styles.buttonConfirm}
-                      onClick={() => void batchUpdate()}
-                    >
-                      确定更新
-                    </button>
+                    <button type="button" style={styles.buttonCancel} onClick={() => setShowUpdateDialog(false)}>稍后更新</button>
+                    <button type="button" style={styles.buttonConfirm} onClick={() => void batchUpdate()}>确定更新</button>
                   </div>
                 </>
               ) : (
-                <p style={{ textAlign: 'center', padding: '24px 0' }}>
-                  所有已安装插件均为最新版本
-                </p>
+                <p style={{ textAlign: 'center', padding: '24px 0' }}>所有已安装插件均为最新版本</p>
               )}
             </div>
           </div>
@@ -773,310 +648,382 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0',
     boxSizing: 'border-box',
     color: 'var(--dsw-alias-label-primary, #12141a)',
+    background: '#18191c',
   },
   tabBar: {
     display: 'flex',
-    gap: '28px',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    gap: 28,
+    borderBottom: '1px solid rgba(255,255,255,0.08)',
     padding: '0 28px',
-    margin: '0',
+    margin: 0,
+    background: '#18191c',
   },
   tab: {
-    color: 'var(--dsw-alias-label-secondary, #4a4f5c)',
+    color: 'rgba(255,255,255,0.5)',
     font: 'inherit',
     background: 'none',
     border: 'none',
-    padding: '10px 0 12px',
-    fontSize: '14px',
+    padding: '12px 0 14px',
+    fontSize: 14,
     lineHeight: '21px',
     cursor: 'pointer',
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '6px',
+    gap: 6,
     position: 'relative',
   },
   tabActive: {
-    color: 'var(--dsw-alias-label-primary, #12141a)',
+    color: '#fff',
     font: 'inherit',
     background: 'none',
     border: 'none',
-    padding: '10px 0 12px',
-    fontSize: '14px',
+    padding: '12px 0 14px',
+    fontSize: 14,
     lineHeight: '21px',
     cursor: 'default',
     display: 'inline-flex',
     alignItems: 'center',
-    gap: '6px',
+    gap: 6,
     position: 'relative',
     fontWeight: 600,
   },
   tabCount: {
-    background: 'color-mix(in srgb, var(--dsw-alias-label-primary, #12141a) 6%, transparent)',
-    color: 'var(--dsw-alias-label-secondary, #4a4f5c)',
-    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.08)',
+    color: 'rgba(255,255,255,0.6)',
+    borderRadius: 999,
     padding: '0 7px',
-    fontSize: '12px',
+    fontSize: 12,
     fontWeight: 500,
     lineHeight: '18px',
   },
   header: {
     display: 'flex',
-    gap: '16px',
+    flexDirection: 'column',
     padding: '24px 28px 0',
-    alignItems: 'flex-start',
   },
-  heroIcon: {
-    width: '48px',
-    height: '48px',
-    borderRadius: '12px',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+  title: { margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: '-0.01em', color: '#fff' },
+  subtitle: { margin: '4px 0 0', fontSize: 13, color: 'rgba(255,255,255,0.5)', lineHeight: 1.5 },
+  searchRow: { padding: '16px 28px 0' },
+  searchWrap: {
+    position: 'relative',
     display: 'flex',
     alignItems: 'center',
-    justifyContent: 'center',
-    color: 'var(--dsw-alias-label-secondary, #4a4f5c)',
-    flexShrink: 0,
   },
-  title: { margin: 0, fontSize: '20px', fontWeight: 700, letterSpacing: '-0.01em' },
-  subtitle: { margin: '4px 0 0', fontSize: '13px', color: 'var(--dsw-alias-label-tertiary, #6b7080)', lineHeight: 1.5 },
-  toolbar: { padding: '16px 28px 0' },
+  searchIcon: {
+    position: 'absolute',
+    left: 12,
+    color: 'rgba(255,255,255,0.3)',
+    pointerEvents: 'none',
+  },
   search: {
     flex: 1,
-    padding: '8px 12px',
-    borderRadius: '8px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'transparent',
-    fontSize: '14px',
-    color: 'inherit',
+    padding: '8px 12px 8px 34px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(255,255,255,0.04)',
+    fontSize: 14,
+    color: '#fff',
     outline: 'none',
     width: '100%',
     boxSizing: 'border-box',
   },
-  filters: { padding: '8px 28px 0' },
-  filterGroup: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '6px' },
+  filterRow: { padding: '8px 28px 0' },
+  filterScroll: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
   chip: {
     padding: '4px 10px',
-    borderRadius: '999px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    borderRadius: 999,
+    border: '1px solid rgba(255,255,255,0.12)',
     background: 'transparent',
-    fontSize: '12px',
-    color: 'var(--dsw-alias-label-secondary, #4a4f5c)',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
     cursor: 'pointer',
   },
   chipActive: {
     padding: '4px 10px',
-    borderRadius: '999px',
-    border: '1px solid var(--dsw-alias-state-business-primary, #2f49d1)',
-    background: 'color-mix(in srgb, var(--dsw-alias-state-business-primary, #2f49d1) 10%, transparent)',
-    fontSize: '12px',
-    color: 'var(--dsw-alias-state-business-primary, #2f49d1)',
+    borderRadius: 999,
+    border: '1px solid #2f49d1',
+    background: 'rgba(47,73,209,0.15)',
+    fontSize: 12,
+    color: '#7da2ff',
     cursor: 'pointer',
     fontWeight: 500,
   },
   summary: {
-    fontSize: '13px',
-    color: 'var(--dsw-alias-label-tertiary, #6b7080)',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.45)',
     padding: '4px 28px 0',
   },
   notice: {
     padding: '8px 28px',
-    borderRadius: '8px',
+    borderRadius: 8,
     border: '1px solid rgba(100,130,255,0.4)',
     background: 'rgba(100,130,255,0.1)',
-    fontSize: '12px',
-    color: 'var(--dsw-alias-state-business-primary, #2f49d1)',
+    fontSize: 12,
+    color: '#7da2ff',
   },
   failure: {
     padding: '8px 28px',
-    borderRadius: '8px',
+    borderRadius: 8,
     border: '1px solid rgba(230,90,90,0.5)',
     background: 'rgba(230,90,90,0.1)',
-    fontSize: '12px',
+    fontSize: 12,
     color: '#e65a5a',
   },
   state: {
     padding: '40px 28px',
     textAlign: 'center',
-    opacity: 0.6,
-    fontSize: '14px',
+    opacity: 0.5,
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.6)',
   },
-  list: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
+  // --- Grid for market cards ---
+  grid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+    gap: 12,
     padding: '12px 28px 20px',
   },
   card: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '8px',
-    padding: '14px 16px',
-    borderRadius: '10px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    gap: 8,
+    padding: 16,
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(255,255,255,0.04)',
     color: 'inherit',
   },
-  cardHeader: {
+  cardTop: {
     display: 'flex',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: '8px',
+    gap: 10,
   },
-  pluginName: {
+  cardTitle: {
     fontWeight: 600,
-    fontSize: '14px',
-    color: 'inherit',
-    textDecoration: 'none',
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.9)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
   },
-  stars: { fontSize: '13px', opacity: 0.8, whiteSpace: 'nowrap' },
-  description: { fontSize: '13px', opacity: 0.8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' },
-  metaRow: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px' },
-  metaRight: { fontSize: '12px', opacity: 0.5, marginLeft: 'auto' },
+  cardAuthor: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.4)',
+    marginTop: 2,
+  },
+  cardDesc: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.6)',
+    lineHeight: 1.4,
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+  },
+  cardTags: { display: 'flex', flexWrap: 'wrap', gap: 4 },
+  cardBottom: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 2,
+  },
+  cardTime: { fontSize: 12, color: 'rgba(255,255,255,0.35)' },
   tag: {
     padding: '2px 8px',
-    borderRadius: '999px',
-    background: 'rgba(128,128,128,0.1)',
-    fontSize: '11px',
-    opacity: 0.7,
+    borderRadius: 999,
+    background: 'rgba(255,255,255,0.06)',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
   },
-  actionRow: { display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' },
+  versionBadge: {
+    padding: '1px 6px',
+    borderRadius: 6,
+    border: '1px solid rgba(255,255,255,0.12)',
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.5)',
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+  },
+  // --- Installed list ---
+  installedList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+    padding: '8px 28px 20px',
+  },
+  installedCard: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '14px 16px',
+    borderRadius: 12,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(255,255,255,0.04)',
+    color: 'inherit',
+  },
+  // --- Badges ---
   badgeOn: {
     padding: '2px 8px',
-    borderRadius: '6px',
-    background: 'rgba(27,107,69,0.12)',
-    color: '#1b6b45',
-    fontSize: '12px',
+    borderRadius: 6,
+    background: 'rgba(27,107,69,0.15)',
+    color: '#4ade80',
+    fontSize: 12,
     fontWeight: 500,
   },
   badgeOff: {
     padding: '2px 8px',
-    borderRadius: '6px',
-    background: 'rgba(200,160,60,0.18)',
-    fontSize: '11px',
-    color: '#8a4b00',
+    borderRadius: 6,
+    background: 'rgba(200,160,60,0.15)',
+    color: '#f0a040',
+    fontSize: 11,
   },
-  badgeMuted: { fontSize: '11px', opacity: 0.55 },
-  buttonPrimary: {
-    marginLeft: 'auto',
-    padding: '5px 14px',
-    borderRadius: '7px',
-    border: '1px solid var(--dsw-alias-state-business-primary, #2f49d1)',
-    background: 'var(--dsw-alias-state-business-primary, #2f49d1)',
+  badgeMuted: { fontSize: 11, opacity: 0.55 },
+  // --- Buttons ---
+  btnPrimary: {
+    padding: '6px 16px',
+    borderRadius: 8,
+    border: 'none',
+    background: '#2f49d1',
     color: '#fff',
-    fontSize: '12px',
+    fontSize: 13,
     fontWeight: 500,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
-  buttonDanger: {
-    marginLeft: 'auto',
-    padding: '5px 14px',
-    borderRadius: '7px',
-    border: '1px solid rgba(230,90,90,0.5)',
+  btnSecondary: {
+    padding: '6px 16px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.15)',
     background: 'transparent',
-    color: '#e65a5a',
-    fontSize: '12px',
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
     fontWeight: 500,
     cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  btnDanger: {
+    padding: '6px 16px',
+    borderRadius: 8,
+    border: '1px solid rgba(230,90,90,0.5)',
+    background: 'rgba(230,90,90,0.08)',
+    color: '#e65a5a',
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  },
+  btnRefresh: {
+    padding: '8px 16px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(255,255,255,0.04)',
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 13,
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    whiteSpace: 'nowrap',
+  },
+  checkUpdateButton: {
+    margin: '8px 28px 0',
+    padding: '8px 18px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.1)',
+    background: 'rgba(255,255,255,0.04)',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.7)',
+    cursor: 'pointer',
+    fontWeight: 500,
   },
   footer: {
     marginTop: 'auto',
-    paddingTop: '16px',
-    fontSize: '12px',
-    opacity: 0.55,
-    textAlign: 'center',
     padding: '16px 28px',
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.3)',
+    textAlign: 'center',
   },
   pagination: {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: '16px',
+    gap: 16,
     padding: '16px 28px 20px',
   },
-  pageButton: {
+  pageBtn: {
     padding: '6px 16px',
-    borderRadius: '8px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    fontSize: '13px',
-    color: 'inherit',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.04)',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.7)',
     cursor: 'pointer',
     fontWeight: 500,
   },
-  pageButtonDisabled: {
+  pageBtnDisabled: {
     padding: '6px 16px',
-    borderRadius: '8px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    fontSize: '13px',
-    color: 'var(--dsw-alias-label-tertiary, #6b7080)',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.04)',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.25)',
     cursor: 'default',
-    opacity: 0.4,
   },
   pageInfo: {
-    fontSize: '13px',
-    color: 'var(--dsw-alias-label-tertiary, #6b7080)',
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.45)',
   },
-  checkUpdateButton: {
-    padding: '6px 14px',
-    borderRadius: '8px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    fontSize: '13px',
-    color: 'inherit',
-    cursor: 'pointer',
-    fontWeight: 500,
-  },
+  // --- Dialog ---
   overlay: {
     position: 'fixed',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0,0,0,0.4)',
+    background: 'rgba(0,0,0,0.6)',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 9999,
   },
   dialog: {
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    borderRadius: '12px',
-    boxShadow: '0 12px 40px rgba(0,0,0,0.2)',
+    background: '#232429',
+    borderRadius: 12,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
     width: '480px',
     maxWidth: '90vw',
     maxHeight: '80vh',
     display: 'flex',
     flexDirection: 'column',
+    border: '1px solid rgba(255,255,255,0.08)',
   },
   dialogHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '16px 20px',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    borderBottom: '1px solid rgba(255,255,255,0.08)',
   },
-  dialogTitle: {
-    margin: 0,
-    fontSize: '16px',
-    fontWeight: 600,
-  },
+  dialogTitle: { margin: 0, fontSize: 16, fontWeight: 600, color: '#fff' },
   dialogClose: {
     background: 'none',
     border: 'none',
-    fontSize: '18px',
+    fontSize: 18,
     cursor: 'pointer',
-    opacity: 0.5,
+    color: 'rgba(255,255,255,0.5)',
     padding: '0 4px',
   },
   dialogBody: {
     padding: '20px',
     overflowY: 'auto',
     flex: 1,
+    color: 'rgba(255,255,255,0.8)',
   },
   updateItem: {
     padding: '8px 0',
-    borderBottom: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    borderBottom: '1px solid rgba(255,255,255,0.06)',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -1084,25 +1031,25 @@ const styles: Record<string, React.CSSProperties> = {
   dialogActions: {
     display: 'flex',
     justifyContent: 'flex-end',
-    gap: '12px',
-    marginTop: '16px',
+    gap: 12,
+    marginTop: 16,
   },
   buttonCancel: {
     padding: '8px 16px',
-    borderRadius: '8px',
-    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
-    background: 'var(--dsw-alias-bg-layer-1, #fff)',
-    fontSize: '14px',
-    color: 'inherit',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'transparent',
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.7)',
     cursor: 'pointer',
   },
   buttonConfirm: {
     padding: '8px 20px',
-    borderRadius: '8px',
+    borderRadius: 8,
     border: 'none',
-    background: 'var(--dsw-alias-state-business-primary, #2f49d1)',
+    background: '#2f49d1',
     color: '#fff',
-    fontSize: '14px',
+    fontSize: 14,
     fontWeight: 500,
     cursor: 'pointer',
   },
