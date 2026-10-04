@@ -30,7 +30,7 @@ export interface PluginConfig {
     githubToken?: string;
     /** Snapshot time-to-live in hours (default 12). */
     cacheTtlHours?: number;
-    /** Number of pages to pull for the seed catalogue (default 200, covering all 17k+ repos). */
+    /** Number of pages to pull for the seed catalogue (default 20, ~2000 repos covers most plugins). */
     maxPages?: number;
     /** Page size for paginated search (default 100). */
     pageSize?: number;
