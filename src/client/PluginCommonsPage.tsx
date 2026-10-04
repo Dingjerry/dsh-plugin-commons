@@ -174,7 +174,7 @@ export function PluginCommonsPage(): JSX.Element {
   const [hasUpdates, setHasUpdates] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [showUpdateDialog, setShowUpdateDialog] = useState(false)
-  const [updateList, setUpdateList] = useState<{ name: string; local: string | null; latest: string }[]>([])
+  const [updateList, setUpdateList] = useState<{ name: string; local: string | null; latest: string; repository: string }[]>([])
 
   // The polling effect must see the current operation without re-subscribing.
   const busyRef = useRef<Busy>(null)
@@ -198,7 +198,7 @@ export function PluginCommonsPage(): JSX.Element {
       const data = await res.json()
       setHasUpdates(data.hasUpdates)
       if (data.hasUpdates && data.updates) {
-        setUpdateList(data.updates.map((u: any) => ({ name: u.name, local: u.localVersion, latest: u.latestVersion })))
+        setUpdateList(data.updates.map((u: any) => ({ name: u.name, local: u.localVersion, latest: u.latestVersion, repository: u.repository })))
         setShowUpdateDialog(true)
       }
     } catch (err) {
@@ -207,6 +207,35 @@ export function PluginCommonsPage(): JSX.Element {
       setUpdating(false)
     }
   }, [])
+
+  const batchUpdate = useCallback(async (): Promise<void> => {
+    setFailure(null)
+    setNotice(`正在批量更新 ${updateList.length} 个插件…完成后将自动刷新。`)
+    setShowUpdateDialog(false)
+    try {
+      const specs = updateList.map((u) => u.repository).filter(Boolean) as string[]
+      const res = await fetch('/api/plugin-commons/batch-update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ specs }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      
+      if (data.failed > 0) {
+        setFailure(`批量更新完成：${data.success} 成功，${data.failed} 失败。${data.errors?.join('; ')}`)
+      } else {
+        setNotice(`所有 ${data.success} 个插件已更新成功！页面将自动刷新…`)
+      }
+      
+      // 等待一段时间后刷新页面，让新安装的插件生效
+      setTimeout(() => {
+        window.location.reload()
+      }, data.failed > 0 ? 5000 : 2000)
+    } catch (err) {
+      setFailure(`批量更新失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, [updateList])
 
   const loadMeta = useCallback(async () => {
     try {
@@ -702,7 +731,7 @@ export function PluginCommonsPage(): JSX.Element {
                     ))}
                   </div>
                   <p style={{ fontSize: '12px', opacity: 0.7, marginBottom: '16px' }}>
-                    更新完成后将自动重启 DSH
+                    更新完成后将自动刷新页面
                   </p>
                   <div style={styles.dialogActions}>
                     <button
@@ -715,11 +744,7 @@ export function PluginCommonsPage(): JSX.Element {
                     <button
                       type="button"
                       style={styles.buttonConfirm}
-                      onClick={() => {
-                        setShowUpdateDialog(false)
-                        // TODO: 批量更新并重启
-                        setNotice(`正在批量更新 ${updateList.length} 个插件…完成后将自动重启。`)
-                      }}
+                      onClick={() => void batchUpdate()}
                     >
                       确定更新
                     </button>

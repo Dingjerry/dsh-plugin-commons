@@ -237,6 +237,55 @@ async function handleSearch(url: URL, res: ServerResponse): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Batch update
+// ---------------------------------------------------------------------------
+
+interface BatchUpdateResult {
+  total: number
+  success: number
+  failed: number
+  errors: string[]
+  status: 'started' | 'completed'
+}
+
+async function handleBatchUpdate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: PluginCommonsRoutesDeps,
+): Promise<void> {
+  const manager = requireManager(deps)
+  const body = await readJsonBody(req)
+  
+  const specs = body.specs as string[]
+  if (!Array.isArray(specs) || specs.length === 0) {
+    throw new RouteError(400, 'BAD_REQUEST', 'Missing or invalid "specs" in request body')
+  }
+  
+  const total = specs.length
+  let success = 0
+  const errors: string[] = []
+  
+  // Process sequentially to avoid concurrent install conflicts
+  for (const spec of specs) {
+    try {
+      await manager.installBundle(spec, { enabled: true })
+      success++
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      errors.push(`${spec}: ${msg}`)
+    }
+  }
+  
+  sendJson(res, 200, {
+    total,
+    success,
+    failed: total - success,
+    errors,
+    status: 'completed',
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Update check
 // ---------------------------------------------------------------------------
 
@@ -487,6 +536,10 @@ async function handle(
   }
   if (method === 'POST' && head === 'toggle' && segments.length === 1) {
     await handleToggle(req, res, deps)
+    return
+  }
+  if (method === 'POST' && head === 'batch-update' && segments.length === 1) {
+    await handleBatchUpdate(req, res, deps)
     return
   }
   if (method === 'GET' && head === 'check-updates' && segments.length === 1) {
