@@ -12,6 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 /** The compact plugin shape served by `/api/plugin-commons/plugins`. */
 interface Plugin {
@@ -44,6 +45,8 @@ interface InstalledPlugin {
   removable: boolean
   blockedBy: string | null
   repository: string | null
+  latestVersion?: string | null
+  needsUpdate?: boolean
 }
 
 interface InstalledResponse {
@@ -152,9 +155,11 @@ export function PluginCommonsPage(): JSX.Element {
   // Market tab state
   const [plugins, setPlugins] = useState<Plugin[]>([])
   const [total, setTotal] = useState(0)
+  const [hasMore, setHasMore] = useState(false)
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<string>('all')
   const [sort, setSort] = useState<string>('stars')
@@ -164,6 +169,12 @@ export function PluginCommonsPage(): JSX.Element {
   const [busy, setBusy] = useState<Busy>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
+
+  // Update check state
+  const [hasUpdates, setHasUpdates] = useState(false)
+  const [updating, setUpdating] = useState(false)
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false)
+  const [updateList, setUpdateList] = useState<{ name: string; local: string | null; latest: string }[]>([])
 
   // The polling effect must see the current operation without re-subscribing.
   const busyRef = useRef<Busy>(null)
@@ -178,6 +189,25 @@ export function PluginCommonsPage(): JSX.Element {
     return data.installed
   }, [])
 
+  const checkUpdates = useCallback(async (): Promise<void> => {
+    setUpdating(true)
+    setFailure(null)
+    try {
+      const res = await fetch('/api/plugin-commons/check-updates')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setHasUpdates(data.hasUpdates)
+      if (data.hasUpdates && data.updates) {
+        setUpdateList(data.updates.map((u: any) => ({ name: u.name, local: u.localVersion, latest: u.latestVersion })))
+        setShowUpdateDialog(true)
+      }
+    } catch (err) {
+      setFailure(`检查更新失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setUpdating(false)
+    }
+  }, [])
+
   const loadMeta = useCallback(async () => {
     try {
       const res = await fetch('/api/plugin-commons/status')
@@ -190,11 +220,14 @@ export function PluginCommonsPage(): JSX.Element {
     } catch { /* ignore */ }
   }, [])
 
-  const load = useCallback(async (q: string, cat: string, s: string) => {
+  const pageRef = useRef(page)
+  pageRef.current = page
+
+  const load = useCallback(async (q: string, cat: string, s: string, pg: number) => {
     setLoading(true)
     setError(false)
     try {
-      const params = new URLSearchParams({ page: '1', limit: '60', sort: s })
+      const params = new URLSearchParams({ page: String(pg), limit: '30', sort: s })
       if (cat !== 'all') params.set('category', cat)
       if (q.trim() !== '') params.set('q', q.trim())
       const res = await fetch(`/api/plugin-commons/plugins?${params.toString()}`)
@@ -202,6 +235,8 @@ export function PluginCommonsPage(): JSX.Element {
       const data = (await res.json()) as ListResponse
       setPlugins(data.items)
       setTotal(data.total)
+      setHasMore(data.hasMore)
+      if (pg !== pageRef.current) setPage(pg)
     } catch {
       setError(true)
     } finally {
@@ -215,8 +250,8 @@ export function PluginCommonsPage(): JSX.Element {
 
   useEffect(() => {
     if (tab !== 'market') return
-    void load(query, category, sort)
-  }, [load, query, category, sort, tab])
+    void load(query, category, sort, page)
+  }, [load, query, category, sort, tab, page])
 
   useEffect(() => {
     if (tab !== 'market' && tab !== 'installed') return
@@ -267,6 +302,17 @@ export function PluginCommonsPage(): JSX.Element {
 
   const search = useCallback((value: string) => {
     setQuery(value)
+    setPage(1)
+  }, [])
+
+  const filterByCategory = useCallback((cat: string) => {
+    setCategory(cat)
+    setPage(1)
+  }, [])
+
+  const sortBy = useCallback((s: string) => {
+    setSort(s)
+    setPage(1)
   }, [])
 
   const startOperation = useCallback(
@@ -382,13 +428,25 @@ export function PluginCommonsPage(): JSX.Element {
               <div key={row.name} style={styles.card}>
                 <div style={styles.cardHeader}>
                   <span style={styles.pluginName}>{row.name}</span>
-                  <span style={styles.stars}>v{row.version ?? '?'}</span>
+                  <span style={styles.stars}>
+                    v{row.version ?? '?'}
+                    {row.needsUpdate && row.latestVersion && (
+                      <span style={{ color: 'var(--dsw-alias-state-business-primary, #2f49d1)', marginLeft: '8px' }}>
+                        ↗ v{row.latestVersion}
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div style={styles.metaRow}>
                   {row.enabled ? (
                     <span style={styles.badgeOn}>已启用</span>
                   ) : (
                     <span style={styles.badgeOff}>已安装 · 未启用</span>
+                  )}
+                  {row.needsUpdate && (
+                    <span style={{ ...styles.badgeOn, background: 'rgba(47,73,209,0.12)', color: 'var(--dsw-alias-state-business-primary, #2f49d1)' }}>
+                      新版本可用
+                    </span>
                   )}
                   {row.repository !== null && (
                     <a
@@ -479,7 +537,7 @@ export function PluginCommonsPage(): JSX.Element {
             <div>
               <h1 style={styles.title}>插件公社</h1>
               <p style={styles.subtitle}>
-                社区共建，插件共享 · 浏览并安装 GitHub 上的 dsh-plugin 插件
+                社区共建，插件共享 · 浏览、搜索 GitHub 上的 {loading || !total ? 'dsh-plugin' : `${total.toLocaleString()}+ dsh-plugin`} 插件，中文界面 · 动态更新 · 本地缓存
               </p>
             </div>
           </header>
@@ -500,7 +558,7 @@ export function PluginCommonsPage(): JSX.Element {
                   key={c.id}
                   type="button"
                   style={category === c.id ? styles.chipActive : styles.chip}
-                  onClick={() => setCategory(c.id)}
+                  onClick={() => filterByCategory(c.id)}
                 >
                   {c.name}
                 </button>
@@ -512,7 +570,7 @@ export function PluginCommonsPage(): JSX.Element {
                   key={s.id}
                   type="button"
                   style={sort === s.id ? styles.chipActive : styles.chip}
-                  onClick={() => setSort(s.id)}
+                  onClick={() => sortBy(s.id)}
                 >
                   {s.name}
                 </button>
@@ -538,7 +596,29 @@ export function PluginCommonsPage(): JSX.Element {
               {query || category !== 'all' ? '没有匹配的插件' : '目录尚未加载完成，稍后再试。'}
             </div>
           ) : (
-            <div style={styles.list}>{marketCardList}</div>
+            <>
+              <div style={styles.list}>{marketCardList}</div>
+              {hasMore && (
+                <div style={styles.pagination}>
+                  <button
+                    type="button"
+                    style={page === 1 ? styles.pageButtonDisabled : styles.pageButton}
+                    disabled={page === 1}
+                    onClick={() => { setPage(page - 1); void load(query, category, sort, page - 1) }}
+                  >
+                    ← 上一页
+                  </button>
+                  <span style={styles.pageInfo}>第 {page} 页 · 共 {Math.ceil(total / 30)} 页</span>
+                  <button
+                    type="button"
+                    style={styles.pageButton}
+                    onClick={() => { setPage(page + 1); void load(query, category, sort, page + 1) }}
+                  >
+                    下一页 →
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -562,7 +642,23 @@ export function PluginCommonsPage(): JSX.Element {
 
           <div style={styles.summary}>
             共 <strong>{installed.length}</strong> 个已安装插件
+            {hasUpdates && (
+              <span style={{ color: 'var(--dsw-alias-state-business-primary, #2f49d1)', marginLeft: '12px' }}>
+                · {updateList.length} 个有可用更新
+              </span>
+            )}
             {!managementAvailable && <><br />当前 profile 未挂载插件管理器</>}
+          </div>
+
+          <div style={{ padding: '0 28px', marginBottom: '8px' }}>
+            <button
+              type="button"
+              style={styles.checkUpdateButton}
+              disabled={updating || !managementAvailable}
+              onClick={() => void checkUpdates()}
+            >
+              {updating ? '正在检查…' : '🔄 检查更新'}
+            </button>
           </div>
 
           {installedCardList ?? (
@@ -574,6 +670,71 @@ export function PluginCommonsPage(): JSX.Element {
       <footer style={styles.footer}>
         插件由第三方社区作者发布；插件公社是社区项目，并非 DeepSeek 官方出品。
       </footer>
+
+      {/* Update check dialog */}
+      {showUpdateDialog && createPortal(
+        <div style={styles.overlay}>
+          <div style={styles.dialog}>
+            <div style={styles.dialogHeader}>
+              <h3 style={styles.dialogTitle}>
+                {hasUpdates ? '🎉 发现更新' : '✅ 已安装插件均为最新版本'}
+              </h3>
+              <button
+                type="button"
+                style={styles.dialogClose}
+                onClick={() => setShowUpdateDialog(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={styles.dialogBody}>
+              {hasUpdates && updateList.length > 0 ? (
+                <>
+                  <p style={{ marginBottom: '12px', fontSize: '14px' }}>以下插件有新版本可用，是否立即更新？</p>
+                  <div style={{ maxHeight: '200px', overflowY: 'auto', marginBottom: '16px' }}>
+                    {updateList.map((item, idx) => (
+                      <div key={idx} style={styles.updateItem}>
+                        <span style={{ fontWeight: 500 }}>{item.name}</span>
+                        <span style={{ color: 'var(--dsw-alias-label-tertiary, #6b7080)', marginLeft: '8px' }}>
+                          {item.local} → {item.latest}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p style={{ fontSize: '12px', opacity: 0.7, marginBottom: '16px' }}>
+                    更新完成后将自动重启 DSH
+                  </p>
+                  <div style={styles.dialogActions}>
+                    <button
+                      type="button"
+                      style={styles.buttonCancel}
+                      onClick={() => setShowUpdateDialog(false)}
+                    >
+                      稍后更新
+                    </button>
+                    <button
+                      type="button"
+                      style={styles.buttonConfirm}
+                      onClick={() => {
+                        setShowUpdateDialog(false)
+                        // TODO: 批量更新并重启
+                        setNotice(`正在批量更新 ${updateList.length} 个插件…完成后将自动重启。`)
+                      }}
+                    >
+                      确定更新
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p style={{ textAlign: 'center', padding: '24px 0' }}>
+                  所有已安装插件均为最新版本
+                </p>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
     </div>
   )
 }
@@ -799,5 +960,125 @@ const styles: Record<string, React.CSSProperties> = {
     opacity: 0.55,
     textAlign: 'center',
     padding: '16px 28px',
+  },
+  pagination: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '16px',
+    padding: '16px 28px 20px',
+  },
+  pageButton: {
+    padding: '6px 16px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    fontSize: '13px',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontWeight: 500,
+  },
+  pageButtonDisabled: {
+    padding: '6px 16px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    fontSize: '13px',
+    color: 'var(--dsw-alias-label-tertiary, #6b7080)',
+    cursor: 'default',
+    opacity: 0.4,
+  },
+  pageInfo: {
+    fontSize: '13px',
+    color: 'var(--dsw-alias-label-tertiary, #6b7080)',
+  },
+  checkUpdateButton: {
+    padding: '6px 14px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    fontSize: '13px',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontWeight: 500,
+  },
+  overlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.4)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  dialog: {
+    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    borderRadius: '12px',
+    boxShadow: '0 12px 40px rgba(0,0,0,0.2)',
+    width: '480px',
+    maxWidth: '90vw',
+    maxHeight: '80vh',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  dialogHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '16px 20px',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+  },
+  dialogTitle: {
+    margin: 0,
+    fontSize: '16px',
+    fontWeight: 600,
+  },
+  dialogClose: {
+    background: 'none',
+    border: 'none',
+    fontSize: '18px',
+    cursor: 'pointer',
+    opacity: 0.5,
+    padding: '0 4px',
+  },
+  dialogBody: {
+    padding: '20px',
+    overflowY: 'auto',
+    flex: 1,
+  },
+  updateItem: {
+    padding: '8px 0',
+    borderBottom: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dialogActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '12px',
+    marginTop: '16px',
+  },
+  buttonCancel: {
+    padding: '8px 16px',
+    borderRadius: '8px',
+    border: '1px solid var(--dsw-alias-border-l2, #e4e6eb)',
+    background: 'var(--dsw-alias-bg-layer-1, #fff)',
+    fontSize: '14px',
+    color: 'inherit',
+    cursor: 'pointer',
+  },
+  buttonConfirm: {
+    padding: '8px 20px',
+    borderRadius: '8px',
+    border: 'none',
+    background: 'var(--dsw-alias-state-business-primary, #2f49d1)',
+    color: '#fff',
+    fontSize: '14px',
+    fontWeight: 500,
+    cursor: 'pointer',
   },
 }

@@ -55,3 +55,13 @@ export declare function loadOrRefreshSnapshot(): Promise<Snapshot>;
 export declare function searchRemote(keyword: string, limit: number): Promise<PluginRepo[]>;
 /** Fetch a single repository by `owner/repo` full name. */
 export declare function fetchRepoDetail(fullName: string): Promise<PluginRepo | null>;
+/** GitHub Release API response for a single tag release. */
+interface LatestReleaseResponse {
+    tag_name: string;
+    name: string;
+    html_url: string;
+    full_name: string;
+}
+/** Fetch the latest release tag for a repository. */
+export declare function fetchLatestVersion(fullName: string): Promise<LatestReleaseResponse | null>;
+export {};

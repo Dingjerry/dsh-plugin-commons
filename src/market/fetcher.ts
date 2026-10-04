@@ -239,3 +239,18 @@ export async function fetchRepoDetail(fullName: string): Promise<PluginRepo | nu
   const raw = await githubRequest<RawRepo>(url)
   return raw === null ? null : normalizeRepo(raw)
 }
+
+/** GitHub Release API response for a single tag release. */
+interface LatestReleaseResponse {
+  tag_name: string
+  name: string
+  html_url: string
+  full_name: string
+}
+
+/** Fetch the latest release tag for a repository. */
+export async function fetchLatestVersion(fullName: string): Promise<LatestReleaseResponse | null> {
+  const cfg = config()
+  const url = `${cfg.githubApiUrl}/repos/${fullName}/releases/latest`
+  return await githubRequest<LatestReleaseResponse>(url)
+}

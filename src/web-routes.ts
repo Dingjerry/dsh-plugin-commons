@@ -18,7 +18,7 @@ import {
   listCategories,
   listPlugins,
 } from './market/catalog.ts'
-import { fetchRepoDetail, searchRemote } from './market/fetcher.ts'
+import { fetchRepoDetail, searchRemote, fetchLatestVersion } from './market/fetcher.ts'
 import { readInstalledPlugins } from './market/installed.ts'
 import type { PluginManagerLike, WebServerLike } from './types.ts'
 
@@ -237,6 +237,84 @@ async function handleSearch(url: URL, res: ServerResponse): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Update check
+// ---------------------------------------------------------------------------
+
+interface UpdateInfo {
+  name: string
+  localVersion: string | null
+  latestVersion: string | null
+  repository: string | null
+  full_name: string | null
+  isInstalled: boolean
+  needsUpdate: boolean
+}
+
+/** Simple semver-like comparison for version strings. Returns true if local < latest. */
+function isVersionOlder(local: string, latest: string): boolean {
+  if (!local || !latest) return true
+  const localParts = local.replace(/^v/, '').split('.').map(Number)
+  const latestParts = latest.replace(/^v/, '').split('.').map(Number)
+  for (let i = 0; i < Math.max(localParts.length, latestParts.length); i++) {
+    const a = localParts[i] ?? 0
+    const b = latestParts[i] ?? 0
+    if (a < b) return true
+    if (a > b) return false
+  }
+  return false
+}
+
+async function handleCheckUpdates(res: ServerResponse, deps: PluginCommonsRoutesDeps): Promise<void> {
+  const manager = deps.manager()
+  if (manager === undefined) {
+    sendJson(res, 200, { available: false, updates: [] })
+    return
+  }
+  const installed = await readInstalledPlugins(manager, deps.profileDir())
+  
+  const updates: UpdateInfo[] = []
+  const needsRestart = false
+  
+  for (const row of installed) {
+    // Only check updates for plugins with a repository URL
+    if (row.repository === null) continue
+    
+    // Extract owner/repo from URL
+    const urlMatch = /\/([^/]+)\/([^/]+)(?:\.git)?$/.exec(row.repository)
+    if (urlMatch === null) continue
+    
+    const fullName = `${urlMatch[1]}/${urlMatch[2]}`
+    const latest = await fetchLatestVersion(fullName)
+    
+    const localVer = row.version
+    const latestVer = latest?.tag_name ?? null
+    
+    // Extract version from tag (e.g., "v1.2.3" -> "1.2.3")
+    const cleanLocal = localVer ? localVer.replace(/^v/, '') : null
+    const cleanLatest = latestVer ? latestVer.replace(/^v/, '') : null
+    
+    updates.push({
+      name: row.name,
+      localVersion: cleanLocal,
+      latestVersion: cleanLatest,
+      repository: row.repository,
+      full_name: latest ? latest.full_name : null,
+      isInstalled: true,
+      needsUpdate: cleanLocal !== null && cleanLatest !== null && isVersionOlder(cleanLocal, cleanLatest),
+    })
+  }
+  
+  const hasUpdates = updates.some((u) => u.needsUpdate)
+  
+  sendJson(res, 200, { 
+    available: true, 
+    updates: updates.filter((u) => u.needsUpdate),
+    totalChecked: updates.length,
+    hasUpdates,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Management handlers
 // ---------------------------------------------------------------------------
 
@@ -409,6 +487,10 @@ async function handle(
   }
   if (method === 'POST' && head === 'toggle' && segments.length === 1) {
     await handleToggle(req, res, deps)
+    return
+  }
+  if (method === 'GET' && head === 'check-updates' && segments.length === 1) {
+    await handleCheckUpdates(res, deps)
     return
   }
 
