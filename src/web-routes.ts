@@ -10,11 +10,7 @@
  * evaluated before any work happens (see {@link RequestGate}).
  */
 
-import { execFile } from 'node:child_process'
-import { readFile, rm, writeFile } from 'node:fs/promises'
-import * as path from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { promisify } from 'node:util'
 import {
   getMeta,
   getPlugin,
@@ -26,7 +22,7 @@ import { fetchRepoDetail, searchRemote } from './market/fetcher.ts'
 import { readInstalledPlugins } from './market/installed.ts'
 import type { PluginManagerLike, WebServerLike } from './types.ts'
 
-const execFileAsync = promisify(execFile)
+
 
 /** Path prefix of the whole Plugin Commons API. */
 export const ROUTE_PREFIX = '/api/plugin-commons'
@@ -241,234 +237,6 @@ async function handleSearch(url: URL, res: ServerResponse): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Read / write helpers for the profile's package.json
-// ---------------------------------------------------------------------------
-
-/** Resolve the profile package.json and its parent directory. */
-function resolveProfilePackageJson(profileDir: string | null): { path: string; dir: string } | null {
-  if (profileDir === null) return null
-  return { path: path.join(profileDir, 'package.json'), dir: profileDir }
-}
-
-/**
- * Read the profile's package.json, returning the bundles array and dependencies.
- */
-async function readProfilePackageJson(
-  resolved: { path: string; dir: string },
-): Promise<{ bundles: string[]; deps: Record<string, string> }> {
-  try {
-    const raw = await readFile(resolved.path, 'utf8')
-    const parsed = JSON.parse(raw) as Record<string, unknown>
-    const dsh = parsed?.dsh as Record<string, unknown> | undefined
-    const profile = dsh?.profile as Record<string, unknown> | undefined
-    const bundles = profile?.bundles as unknown[] | undefined
-    const deps = parsed.dependencies as Record<string, string> | undefined
-    const bundleList = Array.isArray(bundles)
-      ? bundles.filter((b) => typeof b === 'string') as string[]
-      : []
-    return { bundles: bundleList, deps: deps ?? {} }
-  } catch {
-    return { bundles: [], deps: {} }
-  }
-}
-
-/**
- * Write back the profile's package.json with updated bundles and dependencies.
- */
-async function writeProfilePackageJson(
-  resolved: { path: string; dir: string },
-  bundles: string[],
-  deps: Record<string, string>,
-): Promise<void> {
-  const raw = await readFile(resolved.path, 'utf8')
-  const pkg = JSON.parse(raw) as Record<string, unknown>
-  const dsh = pkg.dsh as Record<string, unknown>
-  if (dsh === undefined) {
-    pkg.dsh = { profile: { bundles } }
-  } else {
-    const profile = dsh.profile as Record<string, unknown>
-    if (profile === undefined) {
-      dsh.profile = { bundles }
-    } else {
-      profile.bundles = bundles
-    }
-  }
-  pkg.dependencies = deps
-  await writeFile(resolved.path, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
-}
-
-// ---------------------------------------------------------------------------
-// Filesystem-based management fallback
-// ---------------------------------------------------------------------------
-
-/**
- * Extract a package name from any spec form.
- *
- * - `github:owner/repo` → `repo`
- * - `https://github.com/owner/repo` → `repo`
- * - `owner/repo` → `repo`
- * - bare name → itself
- */
-function packageNameFromSpec(spec: string): string {
-  return spec.split('/').pop() ?? spec
-}
-
-/**
- * Install a plugin when pluginManager is unavailable.
- *
- * Strategy — always fetch the package first, only write package.json after
- * the install succeeds, so a failed install leaves no stale state.
- *
- * 1. Try `npm install` first (handles npm packages + GitHub URLs).
- * 2. If npm fails, fall back to `git clone` + manual install for GitHub repos.
- * 3. If both succeed, write the bundle entry to package.json.
- */
-async function installWithFallback(
-  spec: string,
-  profileDir: string,
-  enabled: boolean,
-): Promise<void> {
-  const resolved = resolveProfilePackageJson(profileDir)
-  if (resolved === null) return
-
-  const pkgName = packageNameFromSpec(spec)
-  const nodeModulesPkgPath = path.join(profileDir, 'node_modules', pkgName)
-
-  // --- Step 1: Try npm install (handles npm packages + GitHub URLs) ---
-  let installOk = false
-  try {
-    await execFileAsync('npm', ['install', spec, '--save'], {
-      cwd: profileDir,
-      timeout: 180_000,
-      maxBuffer: 200 * 1024 * 1024,
-    })
-    installOk = true
-  } catch {
-    // npm may not be available or the spec isn't npm-friendly.
-    installOk = false
-  }
-
-  // --- Step 2: If npm failed and it's a GitHub URL, try git clone ---
-  if (!installOk) {
-    const gh = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)(?:\.git)?$/i.exec(spec)
-    if (gh !== null) {
-      const owner = gh[1]!
-      const repo = gh[2]!
-      const tmpClone = path.join(profileDir, '.dsh-temp-clone')
-      try {
-        // Clone into a temp dir first.
-        await execFileAsync('git', ['clone', `https://github.com/${owner}/${repo}.git`, tmpClone], {
-          cwd: profileDir,
-          timeout: 180_000,
-          maxBuffer: 200 * 1024 * 1024,
-        })
-        // Remove old installation if any (scoped layout: node_modules/@owner/repo).
-        await rm(path.join(profileDir, 'node_modules', `@${owner}`), { recursive: true, force: true })
-        // Remove direct-named installation if any.
-        await rm(nodeModulesPkgPath, { recursive: true, force: true })
-        // Create the target directory and copy the cloned repo there.
-        const targetDir = path.join(profileDir, 'node_modules', `@${owner}`, repo)
-        await copyDir(tmpClone, targetDir)
-        // Clean up temp dir.
-        await rm(tmpClone, { recursive: true, force: true })
-        installOk = true
-      } catch {
-        // cleanup temp dir on failure
-        try { await rm(tmpClone, { recursive: true, force: true }) } catch {}
-        installOk = false
-      }
-    }
-  }
-
-  // --- Step 3: Only write package.json after successful install ---
-  if (!installOk) {
-    throw new RouteError(500, 'INSTALL_FAILED', 'Both npm install and git clone failed; check that the repository exists and git is available')
-  }
-
-  const data = await readProfilePackageJson(resolved)
-  if (!data.bundles.includes(spec)) {
-    data.bundles.push(spec)
-    data.deps[pkgName] = spec
-    await writeProfilePackageJson(resolved, data.bundles, data.deps)
-  }
-}
-
-/**
- * Remove a plugin when pluginManager is unavailable.
- *
- * Strategy — clean up node_modules first, only remove package.json entries
- * after the physical removal succeeds, for the same atomicity principle.
- */
-async function uninstallWithFallback(
-  specOrName: string,
-  profileDir: string,
-): Promise<void> {
-  const resolved = resolveProfilePackageJson(profileDir)
-  if (resolved === null) return
-
-  // Resolve the full spec from existing bundles.
-  const data = await readProfilePackageJson(resolved)
-  const bundleSpec = data.bundles.find(
-    (b) => b === specOrName || b.endsWith(`/${specOrName}`),
-  ) ?? specOrName
-  const depKey = packageNameFromSpec(bundleSpec)
-
-  // Step 1: Try npm uninstall first.
-  let npmUninstallOk = false
-  try {
-    await execFileAsync('npm', ['uninstall', bundleSpec], {
-      cwd: profileDir,
-      timeout: 60_000,
-    })
-    npmUninstallOk = true
-  } catch {
-    npmUninstallOk = false
-  }
-
-  // Step 2: Also clean up the physical directory (belt and suspenders).
-  let dirCleaned = false
-  // Try removing under scoped @owner/repo first.
-  const atIdx = specOrName.indexOf('/')
-  if (atIdx !== -1) {
-    const scope = specOrName.substring(0, atIdx)
-    const scopeDir = path.join(profileDir, 'node_modules', scope)
-    try {
-      await rm(scopeDir, { recursive: true, force: true })
-      dirCleaned = true
-    } catch { /* ignore */ }
-  }
-  // Fallback: direct name.
-  if (!dirCleaned) {
-    const pkgDir = path.join(profileDir, 'node_modules', specOrName)
-    try {
-      await rm(pkgDir, { recursive: true, force: true })
-      dirCleaned = true
-    } catch { /* ignore */ }
-  }
-
-  // Step 3: Remove from package.json only after physical cleanup.
-  data.bundles = data.bundles.filter((b) => b !== bundleSpec)
-  delete data.deps[depKey]
-  await writeProfilePackageJson(resolved, data.bundles, data.deps)
-}
-
-/** Simple directory copy (recursive). */
-async function copyDir(src: string, dest: string): Promise<void> {
-  const fs = await import('node:fs/promises')
-  await fs.mkdir(dest, { recursive: true })
-  const entries = await fs.readdir(src, { withFileTypes: true })
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name)
-    const destPath = path.join(dest, entry.name)
-    if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath)
-    } else {
-      await fs.copyFile(srcPath, destPath)
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Management handlers
 // ---------------------------------------------------------------------------
 
@@ -513,36 +281,11 @@ function acceptThenRun(res: ServerResponse, payload: unknown, work: () => Promis
 async function handleInstalled(res: ServerResponse, deps: PluginCommonsRoutesDeps): Promise<void> {
   const manager = deps.manager()
   if (manager === undefined) {
-    // Fall back to scanning node_modules + package.json.
-    const profileDir = deps.profileDir()
-    if (profileDir === null) {
-      sendJson(res, 200, { available: false, installed: [] })
-      return
-    }
-    const resolved = resolveProfilePackageJson(profileDir)
-    if (resolved === null) {
-      sendJson(res, 200, { available: false, installed: [] })
-      return
-    }
-    const data = await readProfilePackageJson(resolved)
-    // Heuristic: treat every bundle spec in package.json as installed.
-    const installed = data.bundles.map((b) => {
-      // Extract package name from spec (could be URL or bare name).
-      const name = packageNameFromSpec(b)
-      return {
-        name,
-        version: null as string | null,
-        enabled: true,
-        removable: true,
-        blockedBy: null as string | null,
-        repository: null as string | null,
-      }
-    })
-    sendJson(res, 200, { available: true, installed })
-  } else {
-    const installed = await readInstalledPlugins(manager, deps.profileDir())
-    sendJson(res, 200, { available: true, installed })
+    sendJson(res, 200, { available: false, installed: [] })
+    return
   }
+  const installed = await readInstalledPlugins(manager, deps.profileDir())
+  sendJson(res, 200, { available: true, installed })
 }
 
 /** `POST /install` — install one package spec and activate it. */
@@ -551,36 +294,19 @@ async function handleInstall(
   res: ServerResponse,
   deps: PluginCommonsRoutesDeps,
 ): Promise<void> {
-  const manager = deps.manager()
+  const manager = requireManager(deps)
   const body = await readJsonBody(req)
   const spec = requiredString(body, 'spec', MAX_SPEC_LENGTH)
   const enabled = body.enabled !== false
-
-  if (manager !== undefined) {
-    // Use the plugin-manager service when available.
-    acceptThenRun(res, { ok: true, status: 'started', spec }, async () => {
-      try {
-        await manager.installBundle(spec, { enabled })
-      } catch (error) {
-        void error
-      }
-    })
-  } else {
-    // Filesystem fallback: install first, write package.json on success.
-    const profileDir = deps.profileDir()
-    if (profileDir === null) {
-      sendJson(res, 400, errorPayload('NO_PROFILE_DIR', 'Cannot determine profile directory'))
-      return
+  acceptThenRun(res, { ok: true, status: 'started', spec }, async () => {
+    try {
+      await manager.installBundle(spec, { enabled })
+    } catch (error) {
+      // The response is already gone; the log is the only honest place left.
+      // The panel reports the same failure from GET /installed.
+      void error
     }
-    acceptThenRun(res, { ok: true, status: 'started', spec }, async () => {
-      try {
-        await installWithFallback(spec, profileDir, enabled)
-      } catch (error) {
-        // The error will be surfaced through the poll loop on GET /installed.
-        void error
-      }
-    })
-  }
+  })
 }
 
 /** `POST /uninstall` — remove one installed bundle. */
@@ -589,29 +315,16 @@ async function handleUninstall(
   res: ServerResponse,
   deps: PluginCommonsRoutesDeps,
 ): Promise<void> {
-  const manager = deps.manager()
+  const manager = requireManager(deps)
   const body = await readJsonBody(req)
   const name = requiredString(body, 'name', MAX_NAME_LENGTH)
-
-  if (manager !== undefined) {
-    acceptThenRun(res, { ok: true, status: 'started', name }, async () => {
-      try {
-        await manager.removeBundle(name)
-      } catch (error) {
-        void error
-      }
-    })
-  } else {
-    const profileDir = deps.profileDir()
-    if (profileDir === null) return
-    acceptThenRun(res, { ok: true, status: 'started', name }, async () => {
-      try {
-        await uninstallWithFallback(name, profileDir)
-      } catch (error) {
-        void error
-      }
-    })
-  }
+  acceptThenRun(res, { ok: true, status: 'started', name }, async () => {
+    try {
+      await manager.removeBundle(name)
+    } catch (error) {
+      void error
+    }
+  })
 }
 
 /** `POST /toggle` — enable or disable an installed bundle in place. */
@@ -620,18 +333,12 @@ async function handleToggle(
   res: ServerResponse,
   deps: PluginCommonsRoutesDeps,
 ): Promise<void> {
-  const manager = deps.manager()
+  const manager = requireManager(deps)
   const body = await readJsonBody(req)
   const name = requiredString(body, 'name', MAX_NAME_LENGTH)
   const enabled = body.enabled !== false
-
-  if (manager !== undefined) {
-    await manager.setBundleEnabled(name, enabled)
-    sendJson(res, 200, { ok: true, name, enabled })
-  } else {
-    // Without pluginManager we can't toggle at runtime; treat toggle as no-op.
-    sendJson(res, 200, { ok: true, name, enabled, note: 'runtime toggle unavailable without pluginManager' })
-  }
+  await manager.setBundleEnabled(name, enabled)
+  sendJson(res, 200, { ok: true, name, enabled })
 }
 
 /** Route one request; the entry point wrapped by the registered handler. */
