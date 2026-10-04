@@ -268,6 +268,14 @@ async function handleBatchUpdate(
   // Process sequentially to avoid concurrent install conflicts
   for (const spec of specs) {
     try {
+      // First uninstall existing version to trigger actual update
+      // Extract package name from URL: https://github.com/owner/repo -> owner/repo
+      const urlMatch = /\/([^/]+)\/([^/]+)(?:\.git)?$/.exec(spec)
+      const pkgName = urlMatch ? urlMatch[2] : null
+      if (pkgName) {
+        try { await manager.removeBundle(pkgName) } catch { /* ignore, will install fresh */ }
+      }
+      // Then install the latest version
       await manager.installBundle(spec, { enabled: true })
       success++
     } catch (error) {

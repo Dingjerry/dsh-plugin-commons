@@ -502,8 +502,8 @@ export function PluginCommonsPage(): JSX.Element {
       {/* ====== Installed Tab ====== */}
       {tab === 'installed' && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '24px 28px 0' }}>
-            <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '24px 28px 0' }}>
+            <div style={{ flex: 1 }}>
               <h1 style={styles.title}>已安装插件</h1>
               <p style={styles.subtitle}>
                 查看与管理当前主机的 DSH 插件。项目级与内置插件不在此列表中。
@@ -522,20 +522,21 @@ export function PluginCommonsPage(): JSX.Element {
             </div>
           </div>
 
-          <div style={styles.summary}>
-            共 <strong>{installed.length}</strong> 个已安装插件
-            {hasUpdates && (
-              <span style={{ color: 'var(--dsw-alias-state-business-primary, #2f49d1)', marginLeft: '12px' }}>
-                · {updateList.length} 个有可用更新
-              </span>
-            )}
-            {!managementAvailable && <><br />当前 profile 未挂载插件管理器</>}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 28px 0' }}>
+            <div style={styles.summary}>
+              共 <strong>{installed.length}</strong> 个已安装插件
+              {hasUpdates && (
+                <span style={{ color: 'var(--dsw-alias-state-business-primary, #2f49d1)', marginLeft: '12px' }}>
+                  · {updateList.length} 个有可用更新
+                </span>
+              )}
+              {!managementAvailable && <><br />当前 profile 未挂载插件管理器</>}
+            </div>
+            <button type="button" style={styles.checkUpdateButton} disabled={updating || !managementAvailable}
+              onClick={() => void checkUpdates()}>
+              {updating ? '正在检查…' : '🔄 检查更新'}
+            </button>
           </div>
-
-          <button type="button" style={styles.checkUpdateButton} disabled={updating || !managementAvailable}
-            onClick={() => void checkUpdates()}>
-            {updating ? '正在检查…' : '🔄 检查更新'}
-          </button>
 
           {installed.length === 0 ? (
             <div style={styles.state}>暂无已安装插件</div>
