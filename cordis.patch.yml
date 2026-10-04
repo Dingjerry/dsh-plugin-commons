@@ -1,5 +1,5 @@
-# Patch our own plugin row so Cordis hot-reloads the row together with the code.
-# Using `patch` instead of `insert` ensures the sidebar entry appears on every
-# hot-reload cycle without requiring a full DSH restart.
-- patch:
-    id: plugin-commons
+# Add our own plugin row to the plugin tree.
+# This layer does not replace any official DSH component.
+- insert:
+    - id: plugin-commons
+      name: "dsh-plugin-commons"
