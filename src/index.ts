@@ -53,7 +53,7 @@ export interface PluginConfig {
   githubToken?: string
   /** Snapshot time-to-live in hours (default 12). */
   cacheTtlHours?: number
-  /** Number of pages to pull for the seed catalogue (default 5, i.e. 500 repos). */
+  /** Number of pages to pull for the seed catalogue (default 200, covering all 17k+ repos). */
   maxPages?: number
   /** Page size for paginated search (default 100). */
   pageSize?: number
@@ -64,7 +64,7 @@ function resolveConfig(config: PluginConfig | undefined): Required<Omit<PluginCo
   return {
     githubToken: config?.githubToken,
     cacheTtlHours: config?.cacheTtlHours ?? 12,
-    maxPages: config?.maxPages ?? 5,
+    maxPages: config?.maxPages ?? 200,
     pageSize: config?.pageSize ?? 100,
   }
 }
