@@ -420,7 +420,7 @@ export function PluginCommonsPage(): JSX.Element {
       {/* Tabs */}
       <div style={styles.tabBar}>
         <button type="button" style={tab === 'market' ? styles.tabActive : styles.tab} onClick={() => setTab('market')}>
-          插件市场 <span style={styles.tabCount}>{total}</span>
+          插件公社 <span style={styles.tabCount}>{total}</span>
         </button>
         <button type="button" style={tab === 'installed' ? styles.tabActive : styles.tab} onClick={() => setTab('installed')}>
           已安装插件 <span style={styles.tabCount}>{installed.length}</span>
@@ -451,19 +451,25 @@ export function PluginCommonsPage(): JSX.Element {
           </div>
 
           <div style={styles.filterRow}>
-            <div style={styles.filterScroll}>
-              {CATEGORIES.map((c) => (
-                <button key={c.id} type="button" style={category === c.id ? styles.chipActive : styles.chip} onClick={() => filterByCategory(c.id)}>
-                  {c.name}
-                </button>
-              ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>分类：</span>
+              <div style={styles.filterScroll}>
+                {CATEGORIES.map((c) => (
+                  <button key={c.id} type="button" style={category === c.id ? styles.chipActive : styles.chip} onClick={() => filterByCategory(c.id)}>
+                    {c.name}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {SORTS.map((s) => (
-                <button key={s.id} type="button" style={sort === s.id ? styles.chipActive : styles.chip} onClick={() => sortBy(s.id)}>
-                  {s.name}
-                </button>
-              ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>排序：</span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {SORTS.map((s) => (
+                  <button key={s.id} type="button" style={sort === s.id ? styles.chipActive : styles.chip} onClick={() => sortBy(s.id)}>
+                    {s.name}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
