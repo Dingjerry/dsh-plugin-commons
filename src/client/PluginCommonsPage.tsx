@@ -179,12 +179,15 @@ export function PluginCommonsPage(): JSX.Element {
   const [busy, setBusy] = useState<Busy>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [failure, setFailure] = useState<string | null>(null)
+  const [showTokenConfig, setShowTokenConfig] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+  const [tokenConfiguring, setTokenConfiguring] = useState(false)
 
   // Update check state
   const [hasUpdates, setHasUpdates] = useState(false)
   const [updating, setUpdating] = useState(false)
   const [showUpdateDialog, setShowUpdateDialog] = useState(false)
-  const [updateList, setUpdateList] = useState<{ name: string; local: string | null; latest: string; repository: string }[]>([])
+  const [updateList, setUpdateList] = useState<{ name: string; local: string | null; latest: string; repository: string; pkgName: string }[]>([])
 
   // The polling effect must see the current operation without re-subscribing.
   const busyRef = useRef<Busy>(null)
@@ -208,7 +211,7 @@ export function PluginCommonsPage(): JSX.Element {
       const data = await res.json()
       setHasUpdates(data.hasUpdates)
       if (data.hasUpdates && data.updates) {
-        setUpdateList(data.updates.map((u: any) => ({ name: u.name, local: u.localVersion, latest: u.latestVersion, repository: u.repository })))
+        setUpdateList(data.updates.map((u: any) => ({ name: u.name, local: u.localVersion, latest: u.latestVersion, repository: u.repository, pkgName: u.name })))
         setShowUpdateDialog(true)
       }
     } catch (err) {
@@ -223,7 +226,7 @@ export function PluginCommonsPage(): JSX.Element {
     setNotice(`正在批量更新 ${updateList.length} 个插件…完成后将自动刷新。`)
     setShowUpdateDialog(false)
     try {
-      const specs = updateList.map((u) => u.repository).filter(Boolean) as string[]
+      const specs = updateList.map((u) => ({ pkgName: u.pkgName, repository: u.repository }))
       const res = await fetch('/api/plugin-commons/batch-update', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -241,6 +244,36 @@ export function PluginCommonsPage(): JSX.Element {
       setFailure(`批量更新失败：${err instanceof Error ? err.message : String(err)}`)
     }
   }, [updateList])
+
+  const saveToken = useCallback(async (): Promise<void> => {
+    if (!tokenInput.trim()) {
+      setFailure('请输入有效的 GitHub Token')
+      return
+    }
+    setTokenConfiguring(true)
+    setFailure(null)
+    try {
+      const res = await fetch('/api/plugin-commons/save-token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: tokenInput.trim() }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.ok) {
+        setNotice('GitHub Token 已保存，正在刷新插件列表…')
+        setShowTokenConfig(false)
+        setTokenInput('')
+        setTimeout(() => { window.location.reload() }, 1500)
+      } else {
+        setFailure(data.error || '保存失败')
+      }
+    } catch (err) {
+      setFailure(`保存失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTokenConfiguring(false)
+    }
+  }, [tokenInput])
 
   const loadMeta = useCallback(async () => {
     try {
@@ -482,10 +515,10 @@ export function PluginCommonsPage(): JSX.Element {
           {total < 10000 && (
             <div style={styles.infoBox}>
               <span style={{ marginRight: 8 }}>ℹ️</span>
-              <span>默认首屏加载 2000 个高星插件（20 次 API 请求，不会触发限速）。</span>
-              <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer noopener" style={{ marginLeft: 4, color: 'var(--dsw-alias-state-business-primary, #7da2ff)' }}>
-                配置 GitHub Token 可拉取全部 17,000+ 插件 →
-              </a>
+              <span style={{ flex: 1 }}>默认首屏加载 2000 个高星插件（20 次 API 请求，不会触发限速）。配置 GitHub Token 可拉取全部 17,000+ 插件。</span>
+              <button type="button" style={styles.tokenConfigBtn} onClick={() => setShowTokenConfig(true)}>
+                配置 Token →
+              </button>
             </div>
           )}
 
@@ -647,6 +680,47 @@ export function PluginCommonsPage(): JSX.Element {
               ) : (
                 <p style={{ textAlign: 'center', padding: '24px 0' }}>所有已安装插件均为最新版本</p>
               )}
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* Token config dialog */}
+      {showTokenConfig && createPortal(
+        <div style={styles.overlay} onClick={() => setShowTokenConfig(false)}>
+          <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.dialogHeader}>
+              <h3 style={styles.dialogTitle}>🔑 配置 GitHub Token</h3>
+              <button type="button" style={styles.dialogClose} onClick={() => setShowTokenConfig(false)}>✕</button>
+            </div>
+            <div style={styles.dialogBody}>
+              <p style={{ marginBottom: 12, fontSize: 14, lineHeight: 1.6 }}>
+                不配置 Token 时，默认拉取 <strong>2000 个</strong> 高星插件，足够日常使用。
+                <br />
+                配置 Token 后可拉取 <strong>全部 17,000+</strong> 插件。
+              </p>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)', display: 'block', marginBottom: 6 }}>GitHub Personal Access Token</label>
+                <input
+                  style={styles.tokenInput}
+                  type="password"
+                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void saveToken() }}
+                />
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 16 }}>
+                前往 <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer noopener" style={{ color: '#7da2ff' }}>GitHub Token 设置页</a> 创建（选 scopes: `repo` 即可）。
+              </div>
+              {failure && <div style={styles.failure}>{failure}</div>}
+              <div style={styles.dialogActions}>
+                <button type="button" style={styles.buttonCancel} onClick={() => { setShowTokenConfig(false); setTokenInput('') }}>取消</button>
+                <button type="button" style={styles.buttonConfirm} disabled={tokenConfiguring} onClick={() => void saveToken()}>
+                  {tokenConfiguring ? '保存中…' : '保存并刷新'}
+                </button>
+              </div>
             </div>
           </div>
         </div>,
@@ -952,6 +1026,30 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     color: 'rgba(255,255,255,0.55)',
     lineHeight: 1.5,
+  },
+  tokenConfigBtn: {
+    padding: '3px 10px',
+    borderRadius: 6,
+    border: '1px solid rgba(47,73,209,0.5)',
+    background: 'rgba(47,73,209,0.12)',
+    color: '#7da2ff',
+    fontSize: 12,
+    fontWeight: 500,
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
+  },
+  tokenInput: {
+    width: '100%',
+    padding: '8px 12px',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.12)',
+    background: 'rgba(255,255,255,0.06)',
+    fontSize: 14,
+    color: '#fff',
+    fontFamily: 'monospace',
+    outline: 'none',
+    boxSizing: 'border-box',
   },
   checkUpdateButton: {
     margin: '8px 28px 0',

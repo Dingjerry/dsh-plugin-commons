@@ -18,7 +18,7 @@ import {
   listCategories,
   listPlugins,
 } from './market/catalog.ts'
-import { fetchRepoDetail, searchRemote, fetchLatestVersion } from './market/fetcher.ts'
+import { fetchLatestVersion, fetchRepoDetail, searchRemote, configureFetcher } from './market/fetcher.ts'
 import { readInstalledPlugins } from './market/installed.ts'
 import type { PluginManagerLike, WebServerLike } from './types.ts'
 
@@ -256,7 +256,7 @@ async function handleBatchUpdate(
   const manager = requireManager(deps)
   const body = await readJsonBody(req)
   
-  const specs = body.specs as string[]
+  const specs = body.specs as Array<{ pkgName: string; repository: string }>
   if (!Array.isArray(specs) || specs.length === 0) {
     throw new RouteError(400, 'BAD_REQUEST', 'Missing or invalid "specs" in request body')
   }
@@ -266,21 +266,16 @@ async function handleBatchUpdate(
   const errors: string[] = []
   
   // Process sequentially to avoid concurrent install conflicts
-  for (const spec of specs) {
+  for (const { pkgName, repository } of specs) {
     try {
-      // First uninstall existing version to trigger actual update
-      // Extract package name from URL: https://github.com/owner/repo -> owner/repo
-      const urlMatch = /\/([^/]+)\/([^/]+)(?:\.git)?$/.exec(spec)
-      const pkgName = urlMatch ? urlMatch[2] : null
-      if (pkgName) {
-        try { await manager.removeBundle(pkgName) } catch { /* ignore, will install fresh */ }
-      }
-      // Then install the latest version
-      await manager.installBundle(spec, { enabled: true })
+      // Uninstall by exact package name (from installed list)
+      await manager.removeBundle(pkgName)
+      // Install fresh with repository URL
+      await manager.installBundle(repository, { enabled: true })
       success++
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
-      errors.push(`${spec}: ${msg}`)
+      errors.push(`${pkgName}: ${msg}`)
     }
   }
   
@@ -548,6 +543,24 @@ async function handle(
   }
   if (method === 'POST' && head === 'batch-update' && segments.length === 1) {
     await handleBatchUpdate(req, res, deps)
+    return
+  }
+  if (method === 'POST' && head === 'save-token' && segments.length === 1) {
+    const body = await readJsonBody(req)
+    const token = requiredString(body, 'token', 256)
+    // Validate token by making a quick GitHub API call
+    let valid = false
+    try {
+      const res = await fetch('https://api.github.com/user', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      valid = res.ok
+    } catch { /* ignore */ }
+    if (!valid) {
+      sendJson(res, 200, { ok: false, error: 'Token 无效，请检查后重试' })
+      return
+    }
+    sendJson(res, 200, { ok: true })
     return
   }
   if (method === 'GET' && head === 'check-updates' && segments.length === 1) {
