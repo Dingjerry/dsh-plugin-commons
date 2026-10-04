@@ -268,9 +268,8 @@ async function handleBatchUpdate(
   // Process sequentially to avoid concurrent install conflicts
   for (const { pkgName, repository } of specs) {
     try {
-      // Uninstall by exact package name (from installed list)
-      await manager.removeBundle(pkgName)
-      // Install fresh with repository URL
+      // Install fresh with repository URL (spec format like github:owner/repo)
+      // installBundle handles update vs install
       await manager.installBundle(repository, { enabled: true })
       success++
     } catch (error) {
@@ -349,7 +348,7 @@ async function handleCheckUpdates(res: ServerResponse, deps: PluginCommonsRoutes
       name: row.name,
       localVersion: cleanLocal,
       latestVersion: cleanLatest,
-      repository: row.repository,
+      repository: `github:${urlMatch[1]}/${urlMatch[2]}`,
       full_name: latest ? latest.full_name : null,
       isInstalled: true,
       needsUpdate: cleanLocal !== null && cleanLatest !== null && isVersionOlder(cleanLocal, cleanLatest),

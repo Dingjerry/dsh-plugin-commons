@@ -30,6 +30,11 @@ const PLUGIN_ID: string = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
 ).name
 
+/** Package version (read from package.json at build time). */
+const PLUGIN_VERSION: string = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+).version
+
 export default defineConfig({
   name: `${PLUGIN_ID}/client`,
   entry: { client: 'lib/client/index.js' },
@@ -49,6 +54,7 @@ export default defineConfig({
   },
   define: {
     'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV ?? 'production'),
+    '__APP_VERSION__': JSON.stringify(PLUGIN_VERSION),
   },
   outputOptions: {
     entryFileNames: 'client.js',
